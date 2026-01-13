@@ -3444,7 +3444,36 @@ int MachineObject::parse_json(std::string tunnel, std::string payload, bool key_
 
 #pragma region hms
                     if (!key_field_only && jj.contains("hms")) {
-                        m_hms_system->ParseHMSItems(jj["hms"]);
+                        const auto &h = jj["hms"];
+
+                        if (h.is_array()) {
+                            json filtered = json::array();
+
+                            for (const auto &item : h) {
+                                if ((item["attr"] == 83887104 && item["code"] == 65604) ||   // 0500040000010044
+                                    (item["attr"] == 83952640 && item["code"] == 65604) ||   // 0501040000010044
+                                    (item["attr"] == 84018176 && item["code"] == 65604) ||   // 0502040000010044
+                                    (item["attr"] == 84083712 && item["code"] == 65604) ||   // 0503040000010044
+
+                                    (item["attr"] == 83887616 && item["code"] == 65552) ||   // 0500050000010010
+                                    (item["attr"] == 83953152 && item["code"] == 65552) ||
+                                    (item["attr"] == 84018688 && item["code"] == 65552) ||
+                                    (item["attr"] == 84084224 && item["code"] == 65552) ||
+                                    (item["attr"] == 84149760 && item["code"] == 65552) ||
+                                    (item["attr"] == 84215296 && item["code"] == 65552) ||
+                                    (item["attr"] == 84280832 && item["code"] == 65552)
+                                ) {
+                                    continue;
+                                }
+
+                                filtered.push_back(item);
+                            }
+
+                            if (!filtered.empty())
+                                m_hms_system->ParseHMSItems(filtered);
+                        } else {
+                            m_hms_system->ParseHMSItems(h);
+                        }
                     }
 #pragma endregion
 
