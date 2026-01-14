@@ -54,7 +54,6 @@ jobs:
         if: inputs.os == 'windows-latest'
         run: |
           $date = Get-Date -Format 'yyyyMMdd'
-          $ref = "${{ github.ref }}"
           $eventName = "${{ github.event_name }}"
           $prNumber = "${{ github.event.number }}"
 
@@ -128,14 +127,14 @@ jobs:
         run: |
           mkdir build
           cd build
-          cmake .. -G "Visual Studio 17 2022" -A X64 -DBBL_RELEASE_TO_PUBLIC=1 -DBBL_INTERNAL_TESTING=0 -DCMAKE_PREFIX_PATH="${{ github.workspace }}\deps\build\BambuStudio_dep\usr\local" -DCMAKE_INSTALL_PREFIX="../install-dir" -DCMAKE_BUILD_TYPE=Release -DWIN10SDK_PATH="C:/Program Files (x86)/Windows Kits/10/Include/10.0.22000.0"
+          cmake .. -G "Visual Studio 17 2022" -A X64 -DBBL_RELEASE_TO_PUBLIC=1 -DBBL_INTERNAL_TESTING=0 -DCMAKE_PREFIX_PATH="${{ github.workspace }}\deps\build\BambuStudio_dep\usr\local" -DCMAKE_INSTALL_PREFIX="../install-dir" -DCMAKE_BUILD_TYPE=Release -DWIN10SDK_PATH="C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0"
           cmake --build . --target install --config Release -- -m
 
       - name: Create installer Win
         if: inputs.os == 'windows-latest'
         working-directory: ${{ github.workspace }}/build
         run: |
-          cpack -G NSIS
+          cpack -C Release -G NSIS --config CPackConfig.cmake
 
       - name: Upload artifacts Win (Installer Only)
         if: inputs.os == 'windows-latest'
