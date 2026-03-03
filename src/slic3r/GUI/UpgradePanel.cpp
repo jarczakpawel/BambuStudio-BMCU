@@ -32,9 +32,10 @@ namespace GUI {
 // --- BMCU ---
 static inline bool is_custom_sn(const wxString& sn_upper)
 {
-    return sn_upper.length() == 16
-        && sn_upper[0] == '0' && sn_upper[1] == 'E' && sn_upper[2] == 'A'
-        && sn_upper.compare(4, 12, "303030300000") == 0;
+    return sn_upper.length() >= 3
+        && sn_upper[0] == '0'
+        && sn_upper[1] == 'E'
+        && sn_upper[2] == 'A';
 }
 
 static const wxString kBmcuVersionUrlBase =
