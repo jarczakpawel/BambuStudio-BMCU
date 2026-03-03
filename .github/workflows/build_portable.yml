@@ -22,6 +22,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 360
 
+    env:
+      CACHE_REV: v1
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,6 +32,23 @@ jobs:
           lfs: true
           submodules: recursive
           fetch-depth: 0
+
+      - name: Compute deps cache key (non-windows)
+        if: matrix.name != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          deps_tree="$(git rev-parse HEAD:deps 2>/dev/null || echo no-deps)"
+          echo "DEPS_TREE=$deps_tree" >> "$GITHUB_ENV"
+          echo "DEPS_TREE=$deps_tree"
+
+      - name: Compute deps cache key (windows)
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          $depsTree = (git rev-parse HEAD:deps)
+          Add-Content $env:GITHUB_ENV "DEPS_TREE=$depsTree"
+          Write-Host "DEPS_TREE=$depsTree"
 
       # ---------------- Linux ----------------
       - name: Linux - install system deps
@@ -44,7 +64,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/deps/build/destdir
-          key: linux-deps-${{ hashFiles('deps/**') }}
+          key: ${{ runner.os }}-${{ matrix.name }}-deps-${{ env.DEPS_TREE }}-${{ env.CACHE_REV }}
 
       - name: Linux - build deps if missing
         if: matrix.name == 'linux' && steps.cache_linux_deps.outputs.cache-hit != 'true'
@@ -71,6 +91,8 @@ jobs:
 
           cmake --build build --target install -j"$(nproc)"
 
+          test -x install-dir/bin/bambu-studio || (echo "ERROR: missing install-dir/bin/bambu-studio" && exit 1)
+
           tar -C install-dir -czf "out/BambuStudio_Linux_portable_${GITHUB_SHA::7}.tar.gz" .
           (cd out && sha256sum * > SHA256SUMS.txt)
 
@@ -91,7 +113,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}\deps\build\BambuStudio_dep
-          key: win-deps-${{ hashFiles('deps/**') }}
+          key: ${{ runner.os }}-${{ matrix.name }}-deps-${{ env.DEPS_TREE }}-${{ env.CACHE_REV }}
 
       - name: Windows - build deps if missing
         if: matrix.name == 'windows' && steps.cache_win_deps.outputs.cache-hit != 'true'
@@ -118,9 +140,16 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           cmake --build . --target install --config Release -- -m
 
+          $exe1 = "${{ github.workspace }}\install-dir\bin\bambu-studio.exe"
+          $exe2 = "${{ github.workspace }}\install-dir\bambu-studio.exe"
+          if (!(Test-Path $exe1) -and !(Test-Path $exe2)) { throw "Missing bambu-studio exe in install-dir" }
+
           $zip = "${{ github.workspace }}\out\BambuStudio_Windows_portable_${{ github.sha }}.zip"
           if (Test-Path $zip) { Remove-Item -Force $zip }
           Compress-Archive -Path "${{ github.workspace }}\install-dir\*" -DestinationPath $zip -Force
+
+          $sum = (Get-ChildItem -Recurse "${{ github.workspace }}\install-dir" -File | Measure-Object -Sum Length).Sum
+          Write-Host ("Install-dir bytes: " + $sum)
 
           $h = Get-FileHash -Algorithm SHA256 $zip
           "$($h.Hash)  $([System.IO.Path]::GetFileName($zip))" | Out-File -Encoding ascii "${{ github.workspace }}\out\SHA256SUMS.txt"
@@ -132,7 +161,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/deps/build
-          key: mac-deps-${{ hashFiles('deps/**') }}
+          key: ${{ runner.os }}-${{ matrix.name }}-deps-${{ env.DEPS_TREE }}-${{ env.CACHE_REV }}
 
       - name: macOS - install brew deps
         if: matrix.name == 'mac_universal'
@@ -168,6 +197,7 @@ jobs:
         run: |
           ./BuildMac.sh -s -x -a universal -t 10.15 -1
           mkdir -p out
+          test -d "build/universal/BambuStudio/BambuStudio.app" || (echo "ERROR: missing .app" && exit 1)
           ditto -c -k --sequesterRsrc --keepParent "build/universal/BambuStudio/BambuStudio.app" "out/BambuStudio_Mac_universal_${GITHUB_SHA::7}.zip"
           (cd out && shasum -a 256 * > SHA256SUMS.txt)
 
