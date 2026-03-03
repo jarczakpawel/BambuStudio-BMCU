@@ -1,0 +1,116 @@
+name: Build portable
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+    tags: [ "v*" ]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: linux
+          - os: windows-latest
+            name: windows
+          - os: macos-13
+            name: mac_x86_64
+          - os: macos-15
+            name: mac_universal
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Linux - install system deps
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          sudo ./BuildLinux.sh -ur
+          sudo chown $USER -R ./
+
+      - name: Linux - build deps (cached)
+        if: matrix.name == 'linux'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/deps/build/destdir
+          key: linux-deps-${{ hashFiles('deps/**') }}
+
+      - name: Linux - build deps if missing
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          test -d deps/build/destdir/usr/local || ./BuildLinux.sh -dfr
+
+      - name: Linux - build + install (portable dir)
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          rm -rf build install-dir out
+          mkdir -p out
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_PREFIX_PATH="${PWD}/deps/build/destdir/usr/local" \
+            -DSLIC3R_STATIC=1 \
+            -DSLIC3R_GTK=3 \
+            -DBBL_RELEASE_TO_PUBLIC=1 \
+            -DBBL_INTERNAL_TESTING=0 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${PWD}/install-dir"
+          cmake --build build --target install -j"$(nproc)"
+          tar -C install-dir -czf "out/BambuStudio_Linux_portable_${GITHUB_SHA::7}.tar.gz" .
+          (cd out && sha256sum * > SHA256SUMS.txt)
+
+      - name: Windows - build portable zip
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build | Out-Null
+          cd build
+          cmake .. -G "Visual Studio 17 2022" -A X64 `
+            -DBBL_RELEASE_TO_PUBLIC=1 -DBBL_INTERNAL_TESTING=0 `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}\deps\build\BambuStudio_dep\usr\local" `
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}\install-dir" `
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --target install --config Release -- -m
+          cd ${{ github.workspace }}
+          New-Item -ItemType Directory -Force out | Out-Null
+          "C:/Program Files/7-Zip/7z.exe" a -tzip "out/BambuStudio_Windows_portable_${{ github.sha }}.zip" "${{ github.workspace }}/install-dir"
+          cd out
+          CertUtil -hashfile "BambuStudio_Windows_portable_${{ github.sha }}.zip" SHA256 | Out-File -Encoding ascii SHA256SUMS.txt
+
+      - name: macOS - build (x86_64)
+        if: matrix.name == 'mac_x86_64'
+        shell: bash
+        run: |
+          brew install automake texinfo nasm yasm x264 ninja
+          ./BuildMac.sh -s -x -a x86_64 -t 10.15 -1
+          mkdir -p out
+          ditto -c -k --sequesterRsrc --keepParent "build/x86_64/BambuStudio/BambuStudio.app" "out/BambuStudio_Mac_x86_64_${GITHUB_SHA::7}.zip"
+          (cd out && shasum -a 256 * > SHA256SUMS.txt)
+
+      - name: macOS - build (universal)
+        if: matrix.name == 'mac_universal'
+        shell: bash
+        run: |
+          brew install automake texinfo nasm yasm x264 ninja
+          ./BuildMac.sh -s -x -a universal -t 10.15 -1
+          mkdir -p out
+          ditto -c -k --sequesterRsrc --keepParent "build/universal/BambuStudio/BambuStudio.app" "out/BambuStudio_Mac_universal_${GITHUB_SHA::7}.zip"
+          (cd out && shasum -a 256 * > SHA256SUMS.txt)
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bambustudio-${{ matrix.name }}-${{ github.sha }}
+          path: out/
+          if-no-files-found: error
