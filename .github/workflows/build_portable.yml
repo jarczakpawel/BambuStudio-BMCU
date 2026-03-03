@@ -140,6 +140,19 @@ jobs:
         run: |
           brew install automake texinfo nasm yasm x264 ninja
 
+      - name: macOS - pin CMake 3.31.0 (avoid CMake 4.x)
+        if: matrix.name == 'mac_universal'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew unlink cmake || true
+          brew tap-new "$USER/old-cmake"
+          brew extract --version=3.31.0 cmake "$USER/old-cmake"
+          brew install "$USER/old-cmake/cmake@3.31.0"
+          brew link --overwrite cmake@3.31.0
+          brew pin cmake@3.31.0
+          cmake --version
+
       - name: macOS - build deps if missing (arm64/x86_64)
         if: matrix.name == 'mac_universal'
         shell: bash
