@@ -122,9 +122,10 @@ jobs:
           EOF
           chmod 0755 pkgroot/usr/bin/bambu-studio-jarczak
 
-          base_ver="${VER}"
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
             base_ver="${GITHUB_REF_NAME#v}"
+          else
+            base_ver="0.0~git${GITHUB_SHA::7}"
           fi
           deb_ver="${base_ver}~${DIST_ID}"
 
@@ -145,14 +146,15 @@ jobs:
           if [ -x "pkgroot/opt/bambustudio/bin/bambu-studio" ]; then
             set +e
             out="$(dpkg-shlibdeps --ignore-missing-info -O \
-              -l pkgroot/opt/bambustudio/bin \
-              -l pkgroot/opt/bambustudio/lib \
-              -l pkgroot/opt/bambustudio/lib64 \
-              -e pkgroot/opt/bambustudio/bin/bambu-studio 2>&1)"
+              -lpkgroot/opt/bambustudio/bin \
+              -lpkgroot/opt/bambustudio/lib \
+              -lpkgroot/opt/bambustudio/lib64 \
+              pkgroot/opt/bambustudio/bin/bambu-studio 2>&1)"
             rc=$?
             set -e
+
             if [ $rc -eq 0 ]; then
-              depends="$(printf "%s\n" "$out" | sed 's/^shlibs:Depends=//')"
+              depends="$(printf "%s\n" "$out" | sed -n 's/^shlibs:Depends=//p' | tail -n 1)"
             else
               echo "WARN: dpkg-shlibdeps failed:"
               echo "$out"
@@ -380,12 +382,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
-
-      - name: List files
-        shell: bash
-        run: |
-          set -euo pipefail
-          find dist -type f -maxdepth 4 -print
 
       - name: Create/Update release and upload assets
         uses: softprops/action-gh-release@v2
