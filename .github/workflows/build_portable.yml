@@ -175,7 +175,8 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y git ca-certificates curl
+          apt-get install -y git git-lfs ca-certificates curl
+          git lfs install --system
 
       - name: Checkout
         uses: actions/checkout@v4
