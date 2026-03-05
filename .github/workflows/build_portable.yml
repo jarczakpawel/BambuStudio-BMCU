@@ -1,4 +1,4 @@
-name: Build portable
+name: Build PJARCZAK
 
 on:
   workflow_dispatch:
@@ -6,24 +6,20 @@ on:
     branches: [ master ]
     tags: [ "v*" ]
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CACHE_REV: v1
+
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            name: linux
-          - os: windows-latest
-            name: windows
-          - os: macos-15
-            name: mac_universal
-
-    runs-on: ${{ matrix.os }}
+  linux_ubuntu22:
+    name: Linux (ubuntu-22.04)
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
-
     env:
-      CACHE_REV: v1
+      DIST_ID: ubuntu22.04
 
     steps:
       - name: Checkout
@@ -33,47 +29,46 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Compute deps cache key (non-windows)
-        if: matrix.name != 'windows'
+      - name: Compute version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
+            ver="${GITHUB_REF_NAME#v}"
+          else
+            ver="git${GITHUB_SHA::7}"
+          fi
+          echo "VER=$ver" >> "$GITHUB_ENV"
+
+      - name: Compute deps cache key
         shell: bash
         run: |
           set -euo pipefail
           deps_tree="$(git rev-parse HEAD:deps 2>/dev/null || echo no-deps)"
           echo "DEPS_TREE=$deps_tree" >> "$GITHUB_ENV"
-          echo "DEPS_TREE=$deps_tree"
 
-      - name: Compute deps cache key (windows)
-        if: matrix.name == 'windows'
-        shell: pwsh
-        run: |
-          $depsTree = (git rev-parse HEAD:deps)
-          Add-Content $env:GITHUB_ENV "DEPS_TREE=$depsTree"
-          Write-Host "DEPS_TREE=$depsTree"
-
-      # ---------------- Linux ----------------
-      - name: Linux - install system deps
-        if: matrix.name == 'linux'
+      - name: Linux - install system deps (BuildLinux.sh)
         shell: bash
         run: |
+          set -euo pipefail
           sudo ./BuildLinux.sh -ur
           sudo chown $USER -R ./
 
       - name: Linux - cache deps
-        if: matrix.name == 'linux'
         id: cache_linux_deps
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/deps/build/destdir
-          key: ${{ runner.os }}-${{ matrix.name }}-deps-${{ env.DEPS_TREE }}-${{ env.CACHE_REV }}
+          key: linux-${{ env.DIST_ID }}-deps-${{ env.DEPS_TREE }}-${{ env.CACHE_REV }}
 
       - name: Linux - build deps if missing
-        if: matrix.name == 'linux' && steps.cache_linux_deps.outputs.cache-hit != 'true'
+        if: steps.cache_linux_deps.outputs.cache-hit != 'true'
         shell: bash
         run: |
+          set -euo pipefail
           ./BuildLinux.sh -dfr
 
       - name: Linux - build + install (portable dir)
-        if: matrix.name == 'linux'
         shell: bash
         run: |
           set -euo pipefail
@@ -90,33 +85,275 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="${PWD}/install-dir"
 
           cmake --build build --target install -j"$(nproc)"
-
           test -x install-dir/bin/bambu-studio || (echo "ERROR: missing install-dir/bin/bambu-studio" && exit 1)
 
-          tar -C install-dir -czf "out/BambuStudio_Linux_portable_${GITHUB_SHA::7}.tar.gz" .
-          (cd out && sha256sum * > SHA256SUMS.txt)
+          tar -C install-dir -czf "out/BambuStudio_PJARCZAK_Linux_${DIST_ID}_${VER}.tar.gz" .
 
-      # ---------------- Windows ----------------
+      - name: Linux - build AppImage (best-effort)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -x "build/src/BuildLinuxImage.sh" ]; then
+            chmod 755 build/src/BuildLinuxImage.sh
+            (cd build && ./src/BuildLinuxImage.sh -i) || true
+          fi
+
+          appimage="$(find build -maxdepth 3 -type f -name '*.AppImage' | head -n 1 || true)"
+          if [ -n "${appimage}" ]; then
+            mv "${appimage}" "out/BambuStudio_PJARCZAK_Linux_${DIST_ID}_${VER}.AppImage"
+          else
+            echo "WARN: no AppImage produced"
+          fi
+
+      - name: Linux - build .deb from install-dir
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev fakeroot
+
+          rm -rf pkgroot
+          mkdir -p pkgroot/DEBIAN pkgroot/opt/bambustudio pkgroot/usr/bin
+          cp -a install-dir/. pkgroot/opt/bambustudio/
+
+          cat > pkgroot/usr/bin/bambu-studio-jarczak <<'EOF'
+          #!/bin/sh
+          exec /opt/bambustudio/bin/bambu-studio "$@"
+          EOF
+          chmod 0755 pkgroot/usr/bin/bambu-studio-jarczak
+
+          base_ver="${VER}"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
+            base_ver="${GITHUB_REF_NAME#v}"
+          fi
+          deb_ver="${base_ver}~${DIST_ID}"
+
+          depends="$(dpkg-shlibdeps -O -e pkgroot/opt/bambustudio/bin/bambu-studio 2>/dev/null | sed 's/^shlibs:Depends=//')"
+          if [[ -z "${depends}" ]]; then
+            depends="libc6, libstdc++6"
+          fi
+
+          cat > pkgroot/DEBIAN/control <<EOF
+          Package: bambustudio-jarczak
+          Version: ${deb_ver}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: PJARCZAK CI <ci@invalid>
+          Depends: ${depends}
+          Description: BambuStudio PJARCZAK build (installed in /opt/bambustudio)
+           Wrapper: /usr/bin/bambu-studio-jarczak
+          EOF
+
+          fakeroot dpkg-deb --build pkgroot "out/BambuStudio_PJARCZAK_${DIST_ID}_${deb_ver}_amd64.deb"
+
+      - name: Linux - checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd out && sha256sum * > "SHA256SUMS_${DIST_ID}.txt")
+
+      - name: Upload artifacts (Linux ubuntu)
+        uses: actions/upload-artifact@v4
+        with:
+          name: bambustudio-pjarczak-linux-${{ env.DIST_ID }}-${{ github.sha }}
+          path: out/
+          if-no-files-found: error
+
+  linux_debian12:
+    name: Linux (debian12 container)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: debian:bookworm
+    env:
+      DIST_ID: debian12
+
+    steps:
+      - name: Prepare container
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y git ca-certificates curl
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Compute version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
+            ver="${GITHUB_REF_NAME#v}"
+          else
+            ver="git${GITHUB_SHA::7}"
+          fi
+          echo "VER=$ver" >> "$GITHUB_ENV"
+
+      - name: Debian - ensure linux.d/debian exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f "linux.d/debian" ]; then
+            echo "ERROR: linux.d/debian missing in repo"
+            exit 1
+          fi
+
+      - name: Debian - install system deps (BuildLinux.sh)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./BuildLinux.sh -ur
+
+      - name: Debian - build deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./BuildLinux.sh -dfr
+
+      - name: Debian - build + install (portable dir)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build install-dir out
+          mkdir -p out
+
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_PREFIX_PATH="${PWD}/deps/build/destdir/usr/local" \
+            -DSLIC3R_STATIC=1 \
+            -DSLIC3R_GTK=3 \
+            -DBBL_RELEASE_TO_PUBLIC=1 \
+            -DBBL_INTERNAL_TESTING=0 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${PWD}/install-dir"
+
+          cmake --build build --target install -j"$(nproc)"
+          test -x install-dir/bin/bambu-studio || (echo "ERROR: missing install-dir/bin/bambu-studio" && exit 1)
+
+          tar -C install-dir -czf "out/BambuStudio_PJARCZAK_Linux_${DIST_ID}_${VER}.tar.gz" .
+
+      - name: Debian - build AppImage (best-effort)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -x "build/src/BuildLinuxImage.sh" ]; then
+            chmod 755 build/src/BuildLinuxImage.sh
+            (cd build && ./src/BuildLinuxImage.sh -i) || true
+          fi
+
+          appimage="$(find build -maxdepth 3 -type f -name '*.AppImage' | head -n 1 || true)"
+          if [ -n "${appimage}" ]; then
+            mv "${appimage}" "out/BambuStudio_PJARCZAK_Linux_${DIST_ID}_${VER}.AppImage"
+          else
+            echo "WARN: no AppImage produced"
+          fi
+
+      - name: Debian - build .deb from install-dir
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y dpkg-dev fakeroot
+
+          rm -rf pkgroot
+          mkdir -p pkgroot/DEBIAN pkgroot/opt/bambustudio pkgroot/usr/bin
+          cp -a install-dir/. pkgroot/opt/bambustudio/
+
+          cat > pkgroot/usr/bin/bambu-studio-jarczak <<'EOF'
+          #!/bin/sh
+          exec /opt/bambustudio/bin/bambu-studio "$@"
+          EOF
+          chmod 0755 pkgroot/usr/bin/bambu-studio-jarczak
+
+          base_ver="${VER}"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
+            base_ver="${GITHUB_REF_NAME#v}"
+          fi
+          deb_ver="${base_ver}~${DIST_ID}"
+
+          depends="$(dpkg-shlibdeps -O -e pkgroot/opt/bambustudio/bin/bambu-studio 2>/dev/null | sed 's/^shlibs:Depends=//')"
+          if [[ -z "${depends}" ]]; then
+            depends="libc6, libstdc++6"
+          fi
+
+          cat > pkgroot/DEBIAN/control <<EOF
+          Package: bambustudio-jarczak
+          Version: ${deb_ver}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: PJARCZAK CI <ci@invalid>
+          Depends: ${depends}
+          Description: BambuStudio PJARCZAK build (installed in /opt/bambustudio)
+           Wrapper: /usr/bin/bambu-studio-jarczak
+          EOF
+
+          fakeroot dpkg-deb --build pkgroot "out/BambuStudio_PJARCZAK_${DIST_ID}_${deb_ver}_amd64.deb"
+
+      - name: Debian - checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd out && sha256sum * > "SHA256SUMS_${DIST_ID}.txt")
+
+      - name: Upload artifacts (Debian)
+        uses: actions/upload-artifact@v4
+        with:
+          name: bambustudio-pjarczak-linux-${{ env.DIST_ID }}-${{ github.sha }}
+          path: out/
+          if-no-files-found: error
+
+  windows:
+    name: Windows (zip)
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Compute version
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -like "v*") {
+            $ver = "${{ github.ref_name }}".Substring(1)
+          } else {
+            $ver = "git${{ github.sha }}".Substring(0,10)
+          }
+          Add-Content $env:GITHUB_ENV "VER=$ver"
+
+      - name: Compute deps cache key
+        shell: pwsh
+        run: |
+          $depsTree = (git rev-parse HEAD:deps)
+          Add-Content $env:GITHUB_ENV "DEPS_TREE=$depsTree"
+
       - name: Windows - setup MSVC
-        if: matrix.name == 'windows'
         uses: microsoft/setup-msbuild@v2
 
       - name: Windows - install tooling
-        if: matrix.name == 'windows'
         shell: pwsh
         run: |
           choco install -y strawberryperl pkgconfiglite
 
       - name: Windows - cache deps
-        if: matrix.name == 'windows'
         id: cache_win_deps
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}\deps\build\BambuStudio_dep
-          key: ${{ runner.os }}-${{ matrix.name }}-deps-${{ env.DEPS_TREE }}-${{ env.CACHE_REV }}
+          key: windows-deps-${{ env.DEPS_TREE }}-${{ env.CACHE_REV }}
 
       - name: Windows - build deps if missing
-        if: matrix.name == 'windows' && steps.cache_win_deps.outputs.cache-hit != 'true'
+        if: steps.cache_win_deps.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force "${{ github.workspace }}\deps\build" | Out-Null
@@ -124,8 +361,7 @@ jobs:
           cmake .. -G "Visual Studio 17 2022" -A x64 -DDESTDIR="./BambuStudio_dep" -DCMAKE_BUILD_TYPE=Release -DDEP_DEBUG=OFF
           msbuild /m ALL_BUILD.vcxproj /p:Configuration=Release
 
-      - name: Windows - build + install + pack zip
-        if: matrix.name == 'windows'
+      - name: Windows - build + install + zip
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force "${{ github.workspace }}\build" | Out-Null
@@ -140,37 +376,65 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           cmake --build . --target install --config Release -- -m
 
-          $exe1 = "${{ github.workspace }}\install-dir\bin\bambu-studio.exe"
-          $exe2 = "${{ github.workspace }}\install-dir\bambu-studio.exe"
-          if (!(Test-Path $exe1) -and !(Test-Path $exe2)) { throw "Missing bambu-studio exe in install-dir" }
-
-          $zip = "${{ github.workspace }}\out\BambuStudio_Windows_portable_${{ github.sha }}.zip"
+          $zip = "${{ github.workspace }}\out\BambuStudio_PJARCZAK_Windows_${env:VER}.zip"
           if (Test-Path $zip) { Remove-Item -Force $zip }
           Compress-Archive -Path "${{ github.workspace }}\install-dir\*" -DestinationPath $zip -Force
 
-          $sum = (Get-ChildItem -Recurse "${{ github.workspace }}\install-dir" -File | Measure-Object -Sum Length).Sum
-          Write-Host ("Install-dir bytes: " + $sum)
-
           $h = Get-FileHash -Algorithm SHA256 $zip
-          "$($h.Hash)  $([System.IO.Path]::GetFileName($zip))" | Out-File -Encoding ascii "${{ github.workspace }}\out\SHA256SUMS.txt"
+          "$($h.Hash)  $([System.IO.Path]::GetFileName($zip))" | Out-File -Encoding ascii "${{ github.workspace }}\out\SHA256SUMS_windows.txt"
 
-      # ---------------- macOS ----------------
+      - name: Upload artifacts (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: bambustudio-pjarczak-windows-${{ github.sha }}
+          path: out/
+          if-no-files-found: error
+
+  mac_universal:
+    name: macOS (universal zip + dmg)
+    runs-on: macos-15
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Compute version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
+            ver="${GITHUB_REF_NAME#v}"
+          else
+            ver="git${GITHUB_SHA::7}"
+          fi
+          echo "VER=$ver" >> "$GITHUB_ENV"
+
+      - name: Compute deps cache key
+        shell: bash
+        run: |
+          set -euo pipefail
+          deps_tree="$(git rev-parse HEAD:deps 2>/dev/null || echo no-deps)"
+          echo "DEPS_TREE=$deps_tree" >> "$GITHUB_ENV"
+
       - name: macOS - cache deps
-        if: matrix.name == 'mac_universal'
         id: cache_mac_deps
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/deps/build
-          key: ${{ runner.os }}-${{ matrix.name }}-deps-${{ env.DEPS_TREE }}-${{ env.CACHE_REV }}
+          key: macos-deps-${{ env.DEPS_TREE }}-${{ env.CACHE_REV }}
 
       - name: macOS - install brew deps
-        if: matrix.name == 'mac_universal'
         shell: bash
         run: |
+          set -euo pipefail
           brew install automake texinfo nasm yasm x264 ninja
 
       - name: macOS - pin CMake 3.31.0 (avoid CMake 4.x)
-        if: matrix.name == 'mac_universal'
         shell: bash
         run: |
           set -euo pipefail
@@ -182,28 +446,67 @@ jobs:
           brew pin cmake@3.31.0
           cmake --version
 
-      - name: macOS - build deps if missing (arm64/x86_64)
-        if: matrix.name == 'mac_universal'
+      - name: macOS - build deps if missing
+        if: steps.cache_mac_deps.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -d "deps/build/x86_64/BambuStudio_deps/usr/local" ] || [ ! -d "deps/build/arm64/BambuStudio_deps/usr/local" ]; then
-            ./BuildMac.sh -d -x -a universal -t 10.15 -1
-          fi
+          ./BuildMac.sh -d -x -a universal -t 10.15 -1
 
-      - name: macOS - build slicer (universal)
-        if: matrix.name == 'mac_universal'
+      - name: macOS - build slicer (universal) + pack zip
         shell: bash
         run: |
-          ./BuildMac.sh -s -x -a universal -t 10.15 -1
+          set -euo pipefail
+          rm -rf out
           mkdir -p out
+          ./BuildMac.sh -s -x -a universal -t 10.15 -1
           test -d "build/universal/BambuStudio/BambuStudio.app" || (echo "ERROR: missing .app" && exit 1)
-          ditto -c -k --sequesterRsrc --keepParent "build/universal/BambuStudio/BambuStudio.app" "out/BambuStudio_Mac_universal_${GITHUB_SHA::7}.zip"
-          (cd out && shasum -a 256 * > SHA256SUMS.txt)
+          ditto -c -k --sequesterRsrc --keepParent "build/universal/BambuStudio/BambuStudio.app" "out/BambuStudio_PJARCZAK_macOS_universal_${VER}.zip"
 
-      - name: Upload artifacts
+      - name: macOS - pack dmg
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmgdir="$(mktemp -d)"
+          cp -R "build/universal/BambuStudio/BambuStudio.app" "${dmgdir}/BambuStudio.app"
+          ln -s /Applications "${dmgdir}/Applications"
+          hdiutil create -volname "BambuStudio PJARCZAK" -srcfolder "${dmgdir}" -ov -format UDZO "out/BambuStudio_PJARCZAK_macOS_universal_${VER}.dmg"
+
+      - name: macOS - checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd out && shasum -a 256 * > SHA256SUMS_macos.txt)
+
+      - name: Upload artifacts (macOS)
         uses: actions/upload-artifact@v4
         with:
-          name: bambustudio-${{ matrix.name }}-${{ github.sha }}
+          name: bambustudio-pjarczak-macos-${{ github.sha }}
           path: out/
           if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: [linux_ubuntu22, linux_debian12, windows, mac_universal]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: List files
+        shell: bash
+        run: |
+          set -euo pipefail
+          find dist -type f -maxdepth 4 -print
+
+      - name: Create/Update release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          fail_on_unmatched_files: false
