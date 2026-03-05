@@ -229,6 +229,27 @@ jobs:
         run: |
           choco install -y strawberryperl pkgconfiglite
 
+      - name: Windows - ensure pkg-config in PATH
+        shell: pwsh
+        run: |
+          $cmd = Get-Command pkg-config -ErrorAction SilentlyContinue
+          if (-not $cmd) {
+            $candidates = @(
+              "C:\ProgramData\chocolatey\bin\pkg-config.exe",
+              "C:\ProgramData\chocolatey\lib\pkgconfiglite\tools\pkg-config.exe"
+            )
+            $found = $null
+            foreach ($p in $candidates) { if (Test-Path $p) { $found = $p; break } }
+            if (-not $found) {
+              $found = Get-ChildItem -Path "C:\ProgramData\chocolatey" -Recurse -Filter "pkg-config.exe" -ErrorAction SilentlyContinue |
+                Select-Object -First 1 -ExpandProperty FullName
+            }
+            if (-not $found) { throw "pkg-config.exe not found after installing pkgconfiglite" }
+            Add-Content $env:GITHUB_PATH (Split-Path $found)
+          }
+          $pkg = (Get-Command pkg-config).Source
+          Add-Content $env:GITHUB_ENV ("PKG_CONFIG_EXECUTABLE=" + $pkg)
+
       - name: Windows - cache deps
         id: cache_win_deps
         uses: actions/cache@v4
@@ -242,7 +263,9 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force "${{ github.workspace }}\deps\build" | Out-Null
           Set-Location "${{ github.workspace }}\deps\build"
-          cmake .. -G "Visual Studio 17 2022" -A x64 -DDESTDIR="./BambuStudio_dep" -DCMAKE_BUILD_TYPE=Release -DDEP_DEBUG=OFF
+          cmake .. -G "Visual Studio 17 2022" -A x64 `
+            -DDESTDIR="./BambuStudio_dep" -DCMAKE_BUILD_TYPE=Release -DDEP_DEBUG=OFF `
+            -DPKG_CONFIG_EXECUTABLE="${env:PKG_CONFIG_EXECUTABLE}"
           msbuild /m ALL_BUILD.vcxproj /p:Configuration=Release
 
       - name: Windows - build + install + zip
@@ -257,7 +280,8 @@ jobs:
             -DBBL_RELEASE_TO_PUBLIC=1 -DBBL_INTERNAL_TESTING=0 `
             -DCMAKE_PREFIX_PATH="${{ github.workspace }}\deps\build\BambuStudio_dep\usr\local" `
             -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}\install-dir" `
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release `
+            -DPKG_CONFIG_EXECUTABLE="${env:PKG_CONFIG_EXECUTABLE}"
           cmake --build . --target install --config Release -- -m
 
           $zip = "${{ github.workspace }}\out\BambuStudio_PJARCZAK_Windows_${env:VER}.zip"
