@@ -110,9 +110,9 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev fakeroot
+          sudo apt-get install -y dpkg-dev fakeroot binutils
 
-          rm -rf pkgroot
+          rm -rf pkgroot debian
           mkdir -p pkgroot/DEBIAN pkgroot/opt/bambustudio pkgroot/usr/bin
           cp -a install-dir/. pkgroot/opt/bambustudio/
 
@@ -128,16 +128,39 @@ jobs:
           fi
           deb_ver="${base_ver}~${DIST_ID}"
 
-          depends="$(
-            dpkg-shlibdeps --ignore-missing-info -O \
+          mkdir -p debian
+          cat > debian/control <<'EOF'
+          Source: bambustudio-jarczak
+          Section: utils
+          Priority: optional
+          Maintainer: PJARCZAK CI <ci@invalid>
+          Standards-Version: 4.6.2
+
+          Package: bambustudio-jarczak
+          Architecture: amd64
+          Description: dummy control for dpkg-shlibdeps
+          EOF
+
+          depends=""
+          if [ -x "pkgroot/opt/bambustudio/bin/bambu-studio" ]; then
+            set +e
+            out="$(dpkg-shlibdeps --ignore-missing-info -O \
               -l pkgroot/opt/bambustudio/bin \
               -l pkgroot/opt/bambustudio/lib \
               -l pkgroot/opt/bambustudio/lib64 \
-              -e pkgroot/opt/bambustudio/bin/bambu-studio \
-              | sed 's/^shlibs:Depends=//'
-          )"
+              -e pkgroot/opt/bambustudio/bin/bambu-studio 2>&1)"
+            rc=$?
+            set -e
+            if [ $rc -eq 0 ]; then
+              depends="$(printf "%s\n" "$out" | sed 's/^shlibs:Depends=//')"
+            else
+              echo "WARN: dpkg-shlibdeps failed:"
+              echo "$out"
+            fi
+          fi
+
           if [[ -z "${depends}" ]]; then
-            depends="libc6, libstdc++6"
+            depends="libc6, libstdc++6, libgcc-s1"
           fi
 
           cat > pkgroot/DEBIAN/control <<EOF
