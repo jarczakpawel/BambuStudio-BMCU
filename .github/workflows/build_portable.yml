@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CACHE_REV: v1
+  CACHE_REV: v2
 
 jobs:
   linux_ubuntu22:
@@ -68,7 +68,7 @@ jobs:
           set -euo pipefail
           ./BuildLinux.sh -dfr
 
-      - name: Linux - build + install (portable dir)
+      - name: Linux - build + install
         shell: bash
         run: |
           set -euo pipefail
@@ -87,7 +87,7 @@ jobs:
           cmake --build build --target install -j"$(nproc)"
           test -x install-dir/bin/bambu-studio || (echo "ERROR: missing install-dir/bin/bambu-studio" && exit 1)
 
-          tar -C install-dir -czf "out/BambuStudio_PJARCZAK_Linux_${DIST_ID}_${VER}.tar.gz" .
+          tar -C install-dir -czf "out/BambuStudio-BMCU_LinuxDir_${DIST_ID}_amd64_${VER}.tar.gz" .
 
       - name: Linux - build AppImage (best-effort)
         shell: bash
@@ -100,7 +100,7 @@ jobs:
 
           appimage="$(find build -maxdepth 3 -type f -name '*.AppImage' | head -n 1 || true)"
           if [ -n "${appimage}" ]; then
-            mv "${appimage}" "out/BambuStudio_PJARCZAK_Linux_${DIST_ID}_${VER}.AppImage"
+            mv "${appimage}" "out/BambuStudio-BMCU_${DIST_ID}_amd64_${VER}.AppImage"
           else
             echo "WARN: no AppImage produced"
           fi
@@ -123,11 +123,10 @@ jobs:
           chmod 0755 pkgroot/usr/bin/bambu-studio-jarczak
 
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
-            base_ver="${GITHUB_REF_NAME#v}"
+            deb_ver="${VER}~${DIST_ID}"
           else
-            base_ver="0.0~git${GITHUB_SHA::7}"
+            deb_ver="0.0~${VER}~${DIST_ID}"
           fi
-          deb_ver="${base_ver}~${DIST_ID}"
 
           mkdir -p debian
           cat > debian/control <<'EOF'
@@ -173,11 +172,11 @@ jobs:
           Architecture: amd64
           Maintainer: PJARCZAK CI <ci@invalid>
           Depends: ${depends}
-          Description: BambuStudio PJARCZAK build (installed in /opt/bambustudio)
+          Description: BambuStudio BMCU build (installed in /opt/bambustudio)
            Wrapper: /usr/bin/bambu-studio-jarczak
           EOF
 
-          fakeroot dpkg-deb --build pkgroot "out/BambuStudio_PJARCZAK_${DIST_ID}_${deb_ver}_amd64.deb"
+          fakeroot dpkg-deb --build pkgroot "out/BambuStudio-BMCU_${DIST_ID}_amd64_${VER}.deb"
 
       - name: Linux - checksums
         shell: bash
@@ -185,10 +184,171 @@ jobs:
           set -euo pipefail
           (cd out && sha256sum * > "SHA256SUMS_${DIST_ID}.txt")
 
-      - name: Upload artifacts (Linux ubuntu)
+      - name: Upload artifacts (Linux ubuntu22.04)
         uses: actions/upload-artifact@v4
         with:
-          name: bambustudio-pjarczak-linux-${{ env.DIST_ID }}-${{ github.sha }}
+          name: bambustudio-bmcu-linux-${{ env.DIST_ID }}-${{ github.sha }}
+          path: out/
+          if-no-files-found: error
+
+  linux_ubuntu24:
+    name: Linux (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      DIST_ID: ubuntu24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Compute version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
+            ver="${GITHUB_REF_NAME#v}"
+          else
+            ver="git${GITHUB_SHA::7}"
+          fi
+          echo "VER=$ver" >> "$GITHUB_ENV"
+
+      - name: Compute deps cache key
+        shell: bash
+        run: |
+          set -euo pipefail
+          deps_tree="$(git rev-parse HEAD:deps 2>/dev/null || echo no-deps)"
+          echo "DEPS_TREE=$deps_tree" >> "$GITHUB_ENV"
+
+      - name: Linux - install system deps (BuildLinux.sh)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo ./BuildLinux.sh -ur
+          sudo chown $USER -R ./
+
+      - name: Linux - cache deps
+        id: cache_linux_deps
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/deps/build/destdir
+          key: linux-${{ env.DIST_ID }}-deps-${{ env.DEPS_TREE }}-${{ env.CACHE_REV }}
+
+      - name: Linux - build deps if missing
+        if: steps.cache_linux_deps.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./BuildLinux.sh -dfr
+
+      - name: Linux - build + install
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build install-dir out
+          mkdir -p out
+
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_PREFIX_PATH="${PWD}/deps/build/destdir/usr/local" \
+            -DSLIC3R_STATIC=1 \
+            -DSLIC3R_GTK=3 \
+            -DBBL_RELEASE_TO_PUBLIC=1 \
+            -DBBL_INTERNAL_TESTING=0 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${PWD}/install-dir"
+
+          cmake --build build --target install -j"$(nproc)"
+          test -x install-dir/bin/bambu-studio || (echo "ERROR: missing install-dir/bin/bambu-studio" && exit 1)
+
+          tar -C install-dir -czf "out/BambuStudio-BMCU_LinuxDir_${DIST_ID}_amd64_${VER}.tar.gz" .
+
+      - name: Linux - build .deb from install-dir
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev fakeroot binutils
+
+          rm -rf pkgroot debian
+          mkdir -p pkgroot/DEBIAN pkgroot/opt/bambustudio pkgroot/usr/bin
+          cp -a install-dir/. pkgroot/opt/bambustudio/
+
+          cat > pkgroot/usr/bin/bambu-studio-jarczak <<'EOF'
+          #!/bin/sh
+          exec /opt/bambustudio/bin/bambu-studio "$@"
+          EOF
+          chmod 0755 pkgroot/usr/bin/bambu-studio-jarczak
+
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == v* ]]; then
+            deb_ver="${VER}~${DIST_ID}"
+          else
+            deb_ver="0.0~${VER}~${DIST_ID}"
+          fi
+
+          mkdir -p debian
+          cat > debian/control <<'EOF'
+          Source: bambustudio-jarczak
+          Section: utils
+          Priority: optional
+          Maintainer: PJARCZAK CI <ci@invalid>
+          Standards-Version: 4.6.2
+
+          Package: bambustudio-jarczak
+          Architecture: amd64
+          Description: dummy control for dpkg-shlibdeps
+          EOF
+
+          depends=""
+          if [ -x "pkgroot/opt/bambustudio/bin/bambu-studio" ]; then
+            set +e
+            out="$(dpkg-shlibdeps --ignore-missing-info -O \
+              -lpkgroot/opt/bambustudio/bin \
+              -lpkgroot/opt/bambustudio/lib \
+              -lpkgroot/opt/bambustudio/lib64 \
+              pkgroot/opt/bambustudio/bin/bambu-studio 2>&1)"
+            rc=$?
+            set -e
+
+            if [ $rc -eq 0 ]; then
+              depends="$(printf "%s\n" "$out" | sed -n 's/^shlibs:Depends=//p' | tail -n 1)"
+            else
+              echo "WARN: dpkg-shlibdeps failed:"
+              echo "$out"
+            fi
+          fi
+
+          if [[ -z "${depends}" ]]; then
+            depends="libc6, libstdc++6, libgcc-s1"
+          fi
+
+          cat > pkgroot/DEBIAN/control <<EOF
+          Package: bambustudio-jarczak
+          Version: ${deb_ver}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: PJARCZAK CI <ci@invalid>
+          Depends: ${depends}
+          Description: BambuStudio BMCU build (installed in /opt/bambustudio)
+           Wrapper: /usr/bin/bambu-studio-jarczak
+          EOF
+
+          fakeroot dpkg-deb --build pkgroot "out/BambuStudio-BMCU_${DIST_ID}_amd64_${VER}.deb"
+
+      - name: Linux - checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd out && sha256sum * > "SHA256SUMS_${DIST_ID}.txt")
+
+      - name: Upload artifacts (Linux ubuntu24.04)
+        uses: actions/upload-artifact@v4
+        with:
+          name: bambustudio-bmcu-linux-${{ env.DIST_ID }}-${{ github.sha }}
           path: out/
           if-no-files-found: error
 
@@ -284,7 +444,7 @@ jobs:
             -DPKG_CONFIG_EXECUTABLE="${env:PKG_CONFIG_EXECUTABLE}"
           cmake --build . --target install --config Release -- -m
 
-          $zip = "${{ github.workspace }}\out\BambuStudio_PJARCZAK_Windows_${env:VER}.zip"
+          $zip = "${{ github.workspace }}\out\BambuStudio-BMCU_windows_amd64_${env:VER}.zip"
           if (Test-Path $zip) { Remove-Item -Force $zip }
           Compress-Archive -Path "${{ github.workspace }}\install-dir\*" -DestinationPath $zip -Force
 
@@ -294,7 +454,7 @@ jobs:
       - name: Upload artifacts (Windows)
         uses: actions/upload-artifact@v4
         with:
-          name: bambustudio-pjarczak-windows-${{ github.sha }}
+          name: bambustudio-bmcu-windows-${{ github.sha }}
           path: out/
           if-no-files-found: error
 
@@ -369,7 +529,7 @@ jobs:
           mkdir -p out
           ./BuildMac.sh -s -x -a universal -t 10.15 -1
           test -d "build/universal/BambuStudio/BambuStudio.app" || (echo "ERROR: missing .app" && exit 1)
-          ditto -c -k --sequesterRsrc --keepParent "build/universal/BambuStudio/BambuStudio.app" "out/BambuStudio_PJARCZAK_macOS_universal_${VER}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/universal/BambuStudio/BambuStudio.app" "out/BambuStudio-BMCU_macos_universal_${VER}.zip"
 
       - name: macOS - pack dmg
         shell: bash
@@ -378,7 +538,7 @@ jobs:
           dmgdir="$(mktemp -d)"
           cp -R "build/universal/BambuStudio/BambuStudio.app" "${dmgdir}/BambuStudio.app"
           ln -s /Applications "${dmgdir}/Applications"
-          hdiutil create -volname "BambuStudio PJARCZAK" -srcfolder "${dmgdir}" -ov -format UDZO "out/BambuStudio_PJARCZAK_macOS_universal_${VER}.dmg"
+          hdiutil create -volname "BambuStudio BMCU" -srcfolder "${dmgdir}" -ov -format UDZO "out/BambuStudio-BMCU_macos_universal_${VER}.dmg"
 
       - name: macOS - checksums
         shell: bash
@@ -389,13 +549,13 @@ jobs:
       - name: Upload artifacts (macOS)
         uses: actions/upload-artifact@v4
         with:
-          name: bambustudio-pjarczak-macos-${{ github.sha }}
+          name: bambustudio-bmcu-macos-${{ github.sha }}
           path: out/
           if-no-files-found: error
 
   release:
     name: GitHub Release
-    needs: [linux_ubuntu22, windows, mac_universal]
+    needs: [linux_ubuntu22, linux_ubuntu24, windows, mac_universal]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
