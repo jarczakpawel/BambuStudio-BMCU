@@ -86,7 +86,7 @@ nlohmann::json wait_string_callback(Invoke&& invoke)
         return {{"ok", true}, {"value", ret}};
     std::unique_lock<std::mutex> lock(m);
     if (!cv.wait_for(lock, 30s, [&] { return ready; }))
-        return {{"ok", true}, {"value", BBL::BAMBU_NETWORK_ERR_TIMEOUT}};
+        return {{"ok", true}, {"value", BAMBU_NETWORK_ERR_TIMEOUT}};
     return {{"ok", true}, {"value", 0}, {"result", result}};
 }
 
@@ -111,7 +111,7 @@ nlohmann::json wait_string_int_callback(Invoke&& invoke)
         return {{"ok", true}, {"value", ret}};
     std::unique_lock<std::mutex> lock(m);
     if (!cv.wait_for(lock, 30s, [&] { return ready; }))
-        return {{"ok", true}, {"value", BBL::BAMBU_NETWORK_ERR_TIMEOUT}};
+        return {{"ok", true}, {"value", BAMBU_NETWORK_ERR_TIMEOUT}};
     return {{"ok", true}, {"value", 0}, {"result", result}, {"status", status}};
 }
 
@@ -134,7 +134,7 @@ nlohmann::json wait_model_task_callback(Invoke&& invoke)
         return {{"ok", true}, {"value", ret}};
     std::unique_lock<std::mutex> lock(m);
     if (!cv.wait_for(lock, 30s, [&] { return ready; }))
-        return {{"ok", true}, {"value", BBL::BAMBU_NETWORK_ERR_TIMEOUT}};
+        return {{"ok", true}, {"value", BAMBU_NETWORK_ERR_TIMEOUT}};
     return {{"ok", true}, {"value", 0}, {"subtask", subtask}};
 }
 

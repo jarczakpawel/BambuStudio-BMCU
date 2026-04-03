@@ -83,7 +83,13 @@ bool enabled()
 
 bool source_module_is_network_module()
 {
+#if defined(_MSC_VER) || defined(_WIN32)
     return true;
+#elif defined(__WXMAC__) || defined(__APPLE__)
+    return true;
+#else
+    return false;
+#endif
 }
 
 bool should_force_linux_plugin_payload(const std::string& plugin_name)
@@ -108,7 +114,7 @@ std::string bridge_network_current_dir_name()
 #elif defined(__WXMAC__) || defined(__APPLE__)
     return "lib" + bridge_network_module_stem() + ".dylib";
 #else
-    return "lib" + bridge_network_module_stem() + ".so";
+    return linux_network_library_name();
 #endif
 }
 
@@ -119,7 +125,7 @@ std::string bridge_network_library_path(const boost::filesystem::path& plugin_fo
 #elif defined(__WXMAC__) || defined(__APPLE__)
     return (plugin_folder / ("lib" + bridge_network_module_stem() + ".dylib")).string();
 #else
-    return (plugin_folder / ("lib" + bridge_network_module_stem() + ".so")).string();
+    return (plugin_folder / linux_network_library_name()).string();
 #endif
 }
 
@@ -218,7 +224,7 @@ std::string sha256_file_hex(const std::string& file_path, std::string* reason)
 
 std::string expected_network_abi_version()
 {
-    return env_or("PJARCZAK_EXPECTED_BAMBU_NETWORK_VERSION", BAMBU_NETWORK_AGENT_VERSION);
+    return env_or("PJARCZAK_EXPECTED_BAMBU_NETWORK_VERSION", BBL::BAMBU_NETWORK_AGENT_VERSION);
 }
 
 bool abi_version_matches_expected(const std::string& actual_version, std::string* reason)

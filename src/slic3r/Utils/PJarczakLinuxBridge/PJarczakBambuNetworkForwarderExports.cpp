@@ -15,6 +15,11 @@
 #include <thread>
 #include <vector>
 
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wreturn-type-c-linkage"
+#endif
+
 #if defined(_WIN32)
 #define PJBRIDGE_EXPORT extern "C" __declspec(dllexport)
 #else
@@ -29,7 +34,7 @@ static const char* k_version = "PJ-LINUX-BRIDGE-0.4";
 static int invalid_handle()
 {
     g_last_error = "invalid handle";
-    return BBL::BAMBU_NETWORK_ERR_INVALID_HANDLE;
+    return BAMBU_NETWORK_ERR_INVALID_HANDLE;
 }
 
 static BridgeAgent* require_agent(void* handle)
@@ -111,7 +116,7 @@ static void start_cancel_watch(const std::shared_ptr<BridgeJobState>& job)
     });
 }
 
-static int invoke_job_update_only(const char* method, const char* kind, BridgeAgent* a, const nlohmann::json& payload, OnUpdateStatusFn update)
+static int invoke_job_update_only(const char* method, const char* kind, BridgeAgent* a, const nlohmann::json& payload, BBL::OnUpdateStatusFn update)
 {
     if (!a)
         return invalid_handle();
@@ -125,7 +130,7 @@ static int invoke_job_update_only(const char* method, const char* kind, BridgeAg
     return j.value("value", j.value("ret", 0));
 }
 
-static int invoke_job_with_wait(const char* method, const char* kind, BridgeAgent* a, const nlohmann::json& params, OnUpdateStatusFn update, WasCancelledFn cancel, OnWaitFn wait, std::string* out)
+static int invoke_job_with_wait(const char* method, const char* kind, BridgeAgent* a, const nlohmann::json& params, BBL::OnUpdateStatusFn update, BBL::WasCancelledFn cancel, BBL::OnWaitFn wait, std::string* out)
 {
     if (!a)
         return invalid_handle();
@@ -195,7 +200,7 @@ static void json_to_nested_string_map(const nlohmann::json& j, std::map<std::str
     }
 }
 
-static int invoke_progress_job(const char* method, const char* kind, BridgeAgent* a, const nlohmann::json& payload, ProgressFn progress, WasCancelledFn cancel)
+static int invoke_progress_job(const char* method, const char* kind, BridgeAgent* a, const nlohmann::json& payload, BBL::ProgressFn progress, BBL::WasCancelledFn cancel)
 {
     if (!a)
         return invalid_handle();
@@ -211,7 +216,7 @@ static int invoke_progress_job(const char* method, const char* kind, BridgeAgent
     return j.value("value", j.value("ret", 0));
 }
 
-static int invoke_progress_check_job(const char* method, const char* kind, BridgeAgent* a, const nlohmann::json& payload, CheckFn check, ProgressFn progress, WasCancelledFn cancel)
+static int invoke_progress_check_job(const char* method, const char* kind, BridgeAgent* a, const nlohmann::json& payload, BBL::CheckFn check, BBL::ProgressFn progress, BBL::WasCancelledFn cancel)
 {
     if (!a)
         return invalid_handle();
@@ -516,3 +521,7 @@ PJBRIDGE_EXPORT int Bambu_Init() { return RpcClient::instance().invoke_int("src.
 PJBRIDGE_EXPORT void Bambu_Deinit() { RpcClient::instance().invoke_void("src.deinit"); }
 PJBRIDGE_EXPORT char const* Bambu_GetLastErrorMsg() { const auto j = RpcClient::instance().invoke_json("src.get_last_error_msg"); if (j.value("ok", false) && j.contains("message")) g_last_error = j.value("message", std::string()); return g_last_error.c_str(); }
 PJBRIDGE_EXPORT void Bambu_FreeLogMsg(tchar const* msg) { (void)msg; }
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
