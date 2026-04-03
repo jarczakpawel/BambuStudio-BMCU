@@ -1,0 +1,28 @@
+set(PJARCZAK_LINUX_BRIDGE_SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/PJarczakLinuxBridgeConfig.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/PJarczakLinuxSoBridgeRpcProtocol.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/PJarczakLinuxSoBridgeRpcClient.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/PJarczakLinuxSoBridgeEventPump.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/PJarczakBambuNetworkForwarderState.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/PJarczakBambuNetworkForwarderExports.cpp
+)
+
+if (WIN32)
+    list(APPEND PJARCZAK_LINUX_BRIDGE_SOURCES ${CMAKE_CURRENT_LIST_DIR}/PJarczakLinuxSoBridgeLauncher_win.cpp)
+elseif (APPLE)
+    list(APPEND PJARCZAK_LINUX_BRIDGE_SOURCES ${CMAKE_CURRENT_LIST_DIR}/PJarczakLinuxSoBridgeLauncher_mac.mm)
+else()
+    list(APPEND PJARCZAK_LINUX_BRIDGE_SOURCES ${CMAKE_CURRENT_LIST_DIR}/PJarczakLinuxSoBridgeLauncher_linux.cpp)
+endif()
+
+add_library(pjarczak_bambu_networking_bridge SHARED ${PJARCZAK_LINUX_BRIDGE_SOURCES})
+target_include_directories(pjarczak_bambu_networking_bridge PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../../..)
+target_link_libraries(pjarczak_bambu_networking_bridge PRIVATE boost_headeronly boost_libs OpenSSL::Crypto)
+
+add_executable(pjarczak_bambu_linux_host
+    ${TOP_LEVEL_PROJECT_DIR}/tools/pjarczak_bambu_linux_host/main.cpp
+    ${TOP_LEVEL_PROJECT_DIR}/tools/pjarczak_bambu_linux_host/LinuxPluginHost.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/PJarczakLinuxSoBridgeRpcProtocol.cpp
+)
+target_include_directories(pjarczak_bambu_linux_host PRIVATE ${TOP_LEVEL_PROJECT_DIR}/src)
+target_link_libraries(pjarczak_bambu_linux_host PRIVATE boost_headeronly boost_libs ${CMAKE_DL_LIBS} OpenSSL::Crypto)

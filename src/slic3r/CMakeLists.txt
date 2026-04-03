@@ -630,10 +630,13 @@ set(SLIC3R_GUI_SOURCES
     Utils/FileTransferUtils.hpp
     Utils/CertificateVerify.hpp
     Utils/CertificateVerify.cpp
+    Utils/PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp
+    Utils/PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.cpp
 )
 
 add_subdirectory(GUI/DeviceCore)
 add_subdirectory(GUI/DeviceTab)
+add_subdirectory(Utils/PJarczakLinuxBridge)
 
 if (WIN32)
     list(APPEND SLIC3R_GUI_SOURCES

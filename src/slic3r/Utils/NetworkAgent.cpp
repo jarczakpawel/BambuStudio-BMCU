@@ -13,6 +13,7 @@
 
 #include "slic3r/Utils/FileTransferUtils.hpp"
 #include "slic3r/Utils/CertificateVerify.hpp"
+#include "PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
 
 using namespace BBL;
 
@@ -178,104 +179,67 @@ std::string NetworkAgent::get_libpath_in_current_directory(std::string library_n
 
 int NetworkAgent::initialize_network_module(bool using_backup, bool validate_cert)
 {
-    //int ret = -1;
     std::string library;
     std::string data_dir_str = data_dir();
     boost::filesystem::path data_dir_path(data_dir_str);
     auto plugin_folder = data_dir_path / "plugins";
 
-    if (using_backup) {
-        plugin_folder = plugin_folder/"backup";
-    }
+    if (using_backup)
+        plugin_folder = plugin_folder / "backup";
+
+    const bool pj_bridge = Slic3r::PJarczakLinuxBridge::enabled();
+    if (pj_bridge)
+        validate_cert = false;
+
     std::optional<SignerSummary> self_cert_summary, module_cert_summary;
     if (validate_cert)
         self_cert_summary = SummarizeSelf();
-    else
-        BOOST_LOG_TRIVIAL(info) << "wouldn't validate networking dll cert";
-    if (!self_cert_summary)
-        BOOST_LOG_TRIVIAL(info) << "self cert not exist";
 
-    //first load the library
 #if defined(_MSC_VER) || defined(_WIN32)
-    library = plugin_folder.string() + "\\" + std::string(BAMBU_NETWORK_LIBRARY) + ".dll";
-    wchar_t lib_wstr[128];
-    memset(lib_wstr, 0, sizeof(lib_wstr));
-    ::MultiByteToWideChar(CP_UTF8, NULL, library.c_str(), strlen(library.c_str())+1, lib_wstr, sizeof(lib_wstr) / sizeof(lib_wstr[0]));
-    if (self_cert_summary) {
-        module_cert_summary = SummarizeModule(library);
-        if (module_cert_summary) {
-            if (IsSamePublisher(*self_cert_summary, *module_cert_summary))
-                networking_module = LoadLibrary(lib_wstr);
-            else
-                BOOST_LOG_TRIVIAL(info) << "module is from another publisher:" << module_cert_summary->as_print();
-        }
-        else
-            BOOST_LOG_TRIVIAL(info) << "module_cert is null";
-    } else
-        networking_module = LoadLibrary(lib_wstr);
-    if (!networking_module) {
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", try load library directly from current directory");
-
-        std::string library_path = get_libpath_in_current_directory(std::string(BAMBU_NETWORK_LIBRARY));
-        if (library_path.empty()) {
-            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", can not get path in current directory for %1%") % BAMBU_NETWORK_LIBRARY;
-            return -1;
-        }
+    if (pj_bridge) {
+        library = Slic3r::PJarczakLinuxBridge::bridge_network_library_path(plugin_folder);
+        wchar_t lib_wstr[512];
         memset(lib_wstr, 0, sizeof(lib_wstr));
-        ::MultiByteToWideChar(CP_UTF8, NULL, library_path.c_str(), strlen(library_path.c_str())+1, lib_wstr, sizeof(lib_wstr) / sizeof(lib_wstr[0]));
+        ::MultiByteToWideChar(CP_UTF8, 0, library.c_str(), int(library.size()) + 1, lib_wstr, int(sizeof(lib_wstr) / sizeof(lib_wstr[0])));
+        networking_module = LoadLibrary(lib_wstr);
+    } else {
+        library = plugin_folder.string() + "\\" + std::string(BAMBU_NETWORK_LIBRARY) + ".dll";
+        wchar_t lib_wstr[128];
+        memset(lib_wstr, 0, sizeof(lib_wstr));
+        ::MultiByteToWideChar(CP_UTF8, NULL, library.c_str(), strlen(library.c_str()) + 1, lib_wstr, sizeof(lib_wstr) / sizeof(lib_wstr[0]));
         if (self_cert_summary) {
-            module_cert_summary = SummarizeModule(library_path);
-            if (module_cert_summary) {
-                if (IsSamePublisher(*self_cert_summary, *module_cert_summary))
-                    networking_module = LoadLibrary(lib_wstr);
-                else
-                    BOOST_LOG_TRIVIAL(info) << "module is from another publisher:" << module_cert_summary->as_print();
-            }
-            else
-                BOOST_LOG_TRIVIAL(info) << "module_cert is null";
-        }
-        else
+            module_cert_summary = SummarizeModule(library);
+            if (module_cert_summary && IsSamePublisher(*self_cert_summary, *module_cert_summary))
+                networking_module = LoadLibrary(lib_wstr);
+        } else {
             networking_module = LoadLibrary(lib_wstr);
+        }
     }
 #else
+    if (pj_bridge) {
+        library = Slic3r::PJarczakLinuxBridge::bridge_network_library_path(plugin_folder);
+        networking_module = dlopen(library.c_str(), RTLD_LAZY);
+    } else {
     #if defined(__WXMAC__)
-    library = plugin_folder.string() + "/" + std::string("lib") + std::string(BAMBU_NETWORK_LIBRARY) + ".dylib";
+        library = plugin_folder.string() + "/" + std::string("lib") + std::string(BAMBU_NETWORK_LIBRARY) + ".dylib";
     #else
-    library = plugin_folder.string() + "/" + std::string("lib") + std::string(BAMBU_NETWORK_LIBRARY) + ".so";
+        library = plugin_folder.string() + "/" + std::string("lib") + std::string(BAMBU_NETWORK_LIBRARY) + ".so";
     #endif
-    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", line %1%, loading network module, using_backup %2%\n")%__LINE__ %using_backup;
-    module_cert_summary = SummarizeModule(library);
-    if (self_cert_summary) {
-        module_cert_summary = SummarizeModule(library);
-        if (module_cert_summary) {
-            if (IsSamePublisher(*self_cert_summary, *module_cert_summary))
+        if (self_cert_summary) {
+            module_cert_summary = SummarizeModule(library);
+            if (module_cert_summary && IsSamePublisher(*self_cert_summary, *module_cert_summary))
                 networking_module = dlopen(library.c_str(), RTLD_LAZY);
-            else
-                BOOST_LOG_TRIVIAL(info) << "module is from another publisher:" << module_cert_summary->as_print();
+        } else {
+            networking_module = dlopen(library.c_str(), RTLD_LAZY);
         }
-        else
-            BOOST_LOG_TRIVIAL(info) << "module_cert is null";
     }
-    else
-        networking_module = dlopen( library.c_str(), RTLD_LAZY);
-    if (!networking_module) {
-        char* dll_error = dlerror();
-        std::string err       = dll_error ? std::string(dll_error) : std::string("(null)");
-        BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(", error, dlerror is %1%") % err;
-    }
-    BOOST_LOG_TRIVIAL(info) << boost::format("after dlopen, network_module is %1%") % networking_module;
 #endif
 
-    if (!networking_module) {
-        BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(", line %1%, can not Load Library, using_backup %2%\n")%__LINE__ %using_backup;
+    if (!networking_module)
         return -1;
-    }
-    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", line %1%,  successfully loaded library, using_backup %2%, module %3%")%__LINE__ %using_backup %networking_module;
 
-    // load file transfer interface
     InitFTModule(networking_module);
 
-    //load the functions
     check_debug_consistent_ptr        =  reinterpret_cast<func_check_debug_consistent>(get_network_function("bambu_network_check_debug_consistent"));
     get_version_ptr                   =  reinterpret_cast<func_get_version>(get_network_function("bambu_network_get_version"));
     create_agent_ptr                  =  reinterpret_cast<func_create_agent>(get_network_function("bambu_network_create_agent"));
@@ -370,17 +334,15 @@ int NetworkAgent::initialize_network_module(bool using_backup, bool validate_cer
     track_remove_files_ptr            =  reinterpret_cast<func_track_remove_files>(get_network_function("bambu_network_track_remove_files"));
     track_event_ptr                   =  reinterpret_cast<func_track_event>(get_network_function("bambu_network_track_event"));
     track_header_ptr                  =  reinterpret_cast<func_track_header>(get_network_function("bambu_network_track_header"));
-    track_update_property_ptr         = reinterpret_cast<func_track_update_property>(get_network_function("bambu_network_track_update_property"));
-    track_get_property_ptr            = reinterpret_cast<func_track_get_property>(get_network_function("bambu_network_track_get_property"));
-    put_model_mall_rating_url_ptr     = reinterpret_cast<func_put_model_mall_rating_url>(get_network_function("bambu_network_put_model_mall_rating"));
-    get_oss_config_ptr                = reinterpret_cast<func_get_oss_config>(get_network_function("bambu_network_get_oss_config"));
-    put_rating_picture_oss_ptr        = reinterpret_cast<func_put_rating_picture_oss>(get_network_function("bambu_network_put_rating_picture_oss"));
-    get_model_mall_rating_result_ptr  = reinterpret_cast<func_get_model_mall_rating_result>(get_network_function("bambu_network_get_model_mall_rating"));
-
-    get_mw_user_preference_ptr = reinterpret_cast<func_get_mw_user_preference>(get_network_function("bambu_network_get_mw_user_preference"));
-    get_mw_user_4ulist_ptr     = reinterpret_cast<func_get_mw_user_4ulist>(get_network_function("bambu_network_get_mw_user_4ulist"));
-    get_hms_snapshot_ptr              = reinterpret_cast<func_get_hms_snapshot>(get_network_function("bambu_network_get_hms_snapshot"));
-
+    track_update_property_ptr         =  reinterpret_cast<func_track_update_property>(get_network_function("bambu_network_track_update_property"));
+    track_get_property_ptr            =  reinterpret_cast<func_track_get_property>(get_network_function("bambu_network_track_get_property"));
+    put_model_mall_rating_url_ptr     =  reinterpret_cast<func_put_model_mall_rating_url>(get_network_function("bambu_network_put_model_mall_rating"));
+    get_oss_config_ptr                =  reinterpret_cast<func_get_oss_config>(get_network_function("bambu_network_get_oss_config"));
+    put_rating_picture_oss_ptr        =  reinterpret_cast<func_put_rating_picture_oss>(get_network_function("bambu_network_put_rating_picture_oss"));
+    get_model_mall_rating_result_ptr  =  reinterpret_cast<func_get_model_mall_rating_result>(get_network_function("bambu_network_get_model_mall_rating"));
+    get_mw_user_preference_ptr        =  reinterpret_cast<func_get_mw_user_preference>(get_network_function("bambu_network_get_mw_user_preference"));
+    get_mw_user_4ulist_ptr            =  reinterpret_cast<func_get_mw_user_4ulist>(get_network_function("bambu_network_get_mw_user_4ulist"));
+    get_hms_snapshot_ptr              =  reinterpret_cast<func_get_hms_snapshot>(get_network_function("bambu_network_get_hms_snapshot"));
     return 0;
 }
 
@@ -513,51 +475,32 @@ HMODULE NetworkAgent::get_bambu_source_entry()
 void* NetworkAgent::get_bambu_source_entry()
 #endif
 {
-    if ((source_module) || (!networking_module))
+    if (source_module || !networking_module)
         return source_module;
 
-    //int ret = -1;
+    if (Slic3r::PJarczakLinuxBridge::enabled() && Slic3r::PJarczakLinuxBridge::source_module_is_network_module()) {
+        source_module = networking_module;
+        return source_module;
+    }
+
     std::string library;
     std::string data_dir_str = data_dir();
     boost::filesystem::path data_dir_path(data_dir_str);
     auto plugin_folder = data_dir_path / "plugins";
 #if defined(_MSC_VER) || defined(_WIN32)
     wchar_t lib_wstr[128];
-
-    //goto load bambu source
     library = plugin_folder.string() + "/" + std::string(BAMBU_SOURCE_LIBRARY) + ".dll";
     memset(lib_wstr, 0, sizeof(lib_wstr));
     ::MultiByteToWideChar(CP_UTF8, NULL, library.c_str(), strlen(library.c_str())+1, lib_wstr, sizeof(lib_wstr) / sizeof(lib_wstr[0]));
     source_module = LoadLibrary(lib_wstr);
-    if (!source_module) {
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", try load BambuSource directly from current directory");
-        std::string library_path = get_libpath_in_current_directory(std::string(BAMBU_SOURCE_LIBRARY));
-        if (library_path.empty()) {
-            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", can not get path in current directory for %1%") % BAMBU_SOURCE_LIBRARY;
-            return source_module;
-        }
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", line %1%")%__LINE__;
-        memset(lib_wstr, 0, sizeof(lib_wstr));
-        ::MultiByteToWideChar(CP_UTF8, NULL, library_path.c_str(), strlen(library_path.c_str()) + 1, lib_wstr, sizeof(lib_wstr) / sizeof(lib_wstr[0]));
-        source_module = LoadLibrary(lib_wstr);
-    }
 #else
 #if defined(__WXMAC__)
     library = plugin_folder.string() + "/" + std::string("lib") + std::string(BAMBU_SOURCE_LIBRARY) + ".dylib";
 #else
     library = plugin_folder.string() + "/" + std::string("lib") + std::string(BAMBU_SOURCE_LIBRARY) + ".so";
 #endif
-    source_module = dlopen( library.c_str(), RTLD_LAZY);
-    /*if (!source_module) {
-#if defined(__WXMAC__)
-        library = std::string("lib") + BAMBU_SOURCE_LIBRARY + ".dylib";
-#else
-        library = std::string("lib") + BAMBU_SOURCE_LIBRARY + ".so";
+    source_module = dlopen(library.c_str(), RTLD_LAZY);
 #endif
-        source_module = dlopen( library.c_str(), RTLD_LAZY);
-    }*/
-#endif
-
     return source_module;
 }
 

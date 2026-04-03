@@ -112,6 +112,7 @@
 #include "ModelMall.hpp"
 #include "HintNotification.hpp"
 #include "BBLUtil.hpp"
+#include "../Utils/PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
 
 //#ifdef WIN32
 //#include "BaseException.h"
@@ -1576,141 +1577,79 @@ int GUI_App::download_plugin(std::string name, std::string package_name, Install
     json j;
     std::string err_msg;
 
-    // get country_code
     AppConfig* app_config = wxGetApp().app_config;
-    if (!app_config) {
-        j["result"] = "failed";
-        j["error_msg"] = "app_config is nullptr";
-        if (m_agent) {
-            m_agent->track_event("networkplugin_download", j.dump());
-        }
+    if (!app_config)
         return -1;
-    }
 
-    BOOST_LOG_TRIVIAL(info) << "[download_plugin]: enter";
     m_networking_cancel_update = false;
-    // get temp path
+
     fs::path target_file_path = (fs::temp_directory_path() / package_name);
     fs::path tmp_path = target_file_path;
     tmp_path += format(".%1%%2%", get_current_pid(), ".tmp");
 
-#if defined(__WINDOWS__)
-    if (is_running_on_arm64()) {
-        //set to arm64 for plugins
-        std::map<std::string, std::string> current_headers = Slic3r::Http::get_extra_headers();
-        current_headers["X-BBL-OS-Type"] = "windows_arm";
+    const bool pj_force_linux_payload = Slic3r::PJarczakLinuxBridge::should_force_linux_plugin_payload(name);
+    std::map<std::string, std::string> saved_headers = Slic3r::Http::get_extra_headers();
+    bool changed_headers = false;
 
-        Slic3r::Http::set_extra_headers(current_headers);
-        BOOST_LOG_TRIVIAL(info) << boost::format("download_plugin: set X-BBL-OS-Type to windows_arm");
+    auto restore_headers = [&]() {
+        if (changed_headers) {
+            Slic3r::Http::set_extra_headers(saved_headers);
+            changed_headers = false;
+        }
+    };
+
+    if (pj_force_linux_payload) {
+        auto headers = saved_headers;
+        headers["X-BBL-OS-Type"] = Slic3r::PJarczakLinuxBridge::forced_download_os_type();
+        Slic3r::Http::set_extra_headers(headers);
+        changed_headers = true;
     }
-#endif
 
-    // get_url
     std::string  url = get_plugin_url(name, app_config->get_country_code());
     std::string download_url;
     Slic3r::Http http_url = Slic3r::Http::get(url);
-    BOOST_LOG_TRIVIAL(info) << "[download_plugin]: check the plugin from " << url;
     http_url.timeout_connect(TIMEOUT_CONNECT)
         .timeout_max(TIMEOUT_RESPONSE)
         .on_complete(
         [&download_url](std::string body, unsigned status) {
             try {
                 json j = json::parse(body);
-                std::string message = j["message"].get<std::string>();
-
-                if (message == "success") {
+                if (j["message"].get<std::string>() == "success") {
                     json resource = j.at("resources");
                     if (resource.is_array()) {
                         for (auto iter = resource.begin(); iter != resource.end(); iter++) {
-                            Semver version;
-                            std::string url;
-                            std::string type;
-                            std::string vendor;
-                            std::string description;
                             for (auto sub_iter = iter.value().begin(); sub_iter != iter.value().end(); sub_iter++) {
-                                if (boost::iequals(sub_iter.key(), "type")) {
-                                    type = sub_iter.value();
-                                    BOOST_LOG_TRIVIAL(info) << "[download_plugin]: get version of settings's type, " << sub_iter.value();
-                                }
-                                else if (boost::iequals(sub_iter.key(), "version")) {
-                                    version = *(Semver::parse(sub_iter.value()));
-                                }
-                                else if (boost::iequals(sub_iter.key(), "description")) {
-                                    description = sub_iter.value();
-                                }
-                                else if (boost::iequals(sub_iter.key(), "url")) {
-                                    url = sub_iter.value();
-                                }
+                                if (boost::iequals(sub_iter.key(), "url"))
+                                    download_url = sub_iter.value();
                             }
-                            BOOST_LOG_TRIVIAL(info) << "[download_plugin 1]: get type " << type << ", version " << version.to_string() << ", url " << url;
-                            download_url = url;
                         }
                     }
                 }
-                else {
-                    BOOST_LOG_TRIVIAL(info) << "[download_plugin 1]: get version of plugin failed, body=" << body;
-                }
-            }
-            catch (...) {
-                BOOST_LOG_TRIVIAL(error) << "[download_plugin 1]: catch unknown exception";
-                ;
-            }
+            } catch (...) {}
         }).on_error(
             [&result, &err_msg](std::string body, std::string error, unsigned int status) {
-                BOOST_LOG_TRIVIAL(error) << "[download_plugin 1] on_error: " << error<<", body = " << body;
                 err_msg += "[download_plugin 1] on_error: " + error + ", body = " + body;
                 result = -1;
         }).perform_sync();
 
-#if defined(__WINDOWS__)
-    if (is_running_on_arm64()) {
-        //set back
-        std::map<std::string, std::string> current_headers = Slic3r::Http::get_extra_headers();
-        current_headers["X-BBL-OS-Type"] = "windows";
-
-        Slic3r::Http::set_extra_headers(current_headers);
-        BOOST_LOG_TRIVIAL(info) << boost::format("download_plugin: set X-BBL-OS-Type back to windows");
-    }
-#endif
+    restore_headers();
 
     bool cancel = false;
     if (result < 0) {
-        j["result"] = "failed";
-        j["error_msg"] = err_msg;
-        if (m_agent) {
-            m_agent->track_event("networkplugin_download", j.dump());
-        }
         if (pro_fn) pro_fn(InstallStatusDownloadFailed, 0, cancel);
         return result;
     }
 
-
     if (download_url.empty()) {
-        BOOST_LOG_TRIVIAL(info) << "[download_plugin 1]: no available plugin found for this app version: " << SLIC3R_VERSION;
         if (pro_fn) pro_fn(InstallStatusDownloadFailed, 0, cancel);
-        j["result"] = "failed";
-        j["error_msg"] = "[download_plugin 1]: no available plugin found for this app version: " + std::string(SLIC3R_VERSION);
-        if (m_agent) {
-            m_agent->track_event("networkplugin_download", j.dump());
-        }
         return -1;
-    }
-    else if (pro_fn) {
+    } else if (pro_fn) {
         pro_fn(InstallStatusNormal, 5, cancel);
     }
 
-    if (m_networking_cancel_update || cancel) {
-        BOOST_LOG_TRIVIAL(info) << boost::format("[download_plugin 1]: %1%, cancelled by user") % __LINE__;
-        j["result"] = "failed";
-        j["error_msg"] = (boost::format("[download_plugin 1]: %1%, cancelled by user") % __LINE__).str();
-        if (m_agent) {
-            m_agent->track_event("networkplugin_download", j.dump());
-        }
+    if (m_networking_cancel_update || cancel)
         return -1;
-    }
-    BOOST_LOG_TRIVIAL(info) << "[download_plugin] get_url = " << download_url;
 
-    // download
     Slic3r::Http http = Slic3r::Http::get(download_url);
     int reported_percent = 0;
     http.on_progress(
@@ -1722,12 +1661,10 @@ int GUI_App::download_plugin(std::string name, std::string package_name, Install
             if (pro_fn && ((percent - reported_percent) >= 10)) {
                 pro_fn(InstallStatusNormal, percent, was_cancel);
                 reported_percent = percent;
-                BOOST_LOG_TRIVIAL(info) << "[download_plugin 2] progress: " << reported_percent;
             }
             cancel = m_networking_cancel_update || was_cancel;
-            if (cancel_fn)
-                if (cancel_fn())
-                    cancel = true;
+            if (cancel_fn && cancel_fn())
+                cancel = true;
 
             if (cancel) {
                 err_msg += "[download_plugin] cancel";
@@ -1735,9 +1672,7 @@ int GUI_App::download_plugin(std::string name, std::string package_name, Install
             }
         })
         .on_complete([&pro_fn, tmp_path, target_file_path](std::string body, unsigned status) {
-            BOOST_LOG_TRIVIAL(info) << "[download_plugin 2] completed";
             bool cancel = false;
-            int percent = 0;
             fs::fstream file(tmp_path, std::ios::out | std::ios::binary | std::ios::trunc);
             file.write(body.c_str(), body.size());
             file.close();
@@ -1747,16 +1682,11 @@ int GUI_App::download_plugin(std::string name, std::string package_name, Install
         .on_error([&pro_fn, &result, &err_msg](std::string body, std::string error, unsigned int status) {
             bool cancel = false;
             if (pro_fn) pro_fn(InstallStatusDownloadFailed, 0, cancel);
-            BOOST_LOG_TRIVIAL(error) << "[download_plugin 2] on_error: " << error<<", body = " << body;
             err_msg += "[download_plugin 2] on_error: " + error + ", body = " + body;
             result = -1;
         });
     http.perform_sync();
-    j["result"] = result < 0 ? "failed" : "success";
-    j["error_msg"] = err_msg;
-    if (m_agent) {
-        m_agent->track_event("networkplugin_download", j.dump());
-    }
+
     return result;
 }
 
@@ -3353,27 +3283,16 @@ void GUI_App::copy_network_if_available()
 {
     if (app_config->get("update_network_plugin") != "true")
         return;
+
     std::string data_dir_str = data_dir();
     fs::path data_dir_path(data_dir_str);
     auto plugin_folder = data_dir_path / "plugins";
     auto cache_folder = data_dir_path / "ota" / "plugins";
-    //std::string changelog_file = cache_folder.string() + "/network_plugins.json";
-#if defined(_MSC_VER) || defined(_WIN32)
-    const char* library_ext = ".dll";
-#elif defined(__WXMAC__)
-    const char* library_ext = ".dylib";
-#else
-    const char* library_ext = ".so";
-#endif
 
-    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": checking network_library from ota directory";
-    if (!boost::filesystem::exists(plugin_folder)) {
-        //BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": create directory " << plugin_folder.string();
+    if (!boost::filesystem::exists(plugin_folder))
         boost::filesystem::create_directory(plugin_folder);
-    }
 
     if (!boost::filesystem::exists(cache_folder)) {
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": can not found ota plugins directory ";
         app_config->set("update_network_plugin", "false");
         return;
     }
@@ -3383,32 +3302,38 @@ void GUI_App::copy_network_if_available()
         for (auto& dir_entry : boost::filesystem::directory_iterator(cache_folder))
         {
             const auto& path = dir_entry.path();
+            std::string file_name = path.filename().string();
             std::string file_path = path.string();
 
-            if (boost::algorithm::iends_with(file_path, library_ext)) {
-                std::string file_name = path.filename().string();
-                std::string dest_path = (plugin_folder / file_name).string();
-                CopyFileResult cfr = copy_file(file_path, dest_path, error_message, false);
-                if (cfr != CopyFileResult::SUCCESS) {
-                    BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": Copying failed(" << cfr << "): " << error_message;
-                    return;
+            if (Slic3r::PJarczakLinuxBridge::enabled()) {
+                if (file_name == Slic3r::PJarczakLinuxBridge::linux_payload_manifest_file_name()) {
+                    std::string dest_path = (plugin_folder / file_name).string();
+                    CopyFileResult cfr = copy_file(file_path, dest_path, error_message, false);
+                    if (cfr != CopyFileResult::SUCCESS)
+                        return;
+                    continue;
                 }
-
-                static constexpr const auto perms = fs::owner_read | fs::owner_write | fs::group_read | fs::others_read;
-                fs::permissions(dest_path, perms);
-                BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": Copying network library successfully.";
+                if (!Slic3r::PJarczakLinuxBridge::is_linux_payload_filename(file_name))
+                    continue;
+                std::string validate_reason;
+                if (!Slic3r::PJarczakLinuxBridge::validate_linux_payload_file(file_path, &validate_reason))
+                    continue;
             }
+
+            std::string dest_path = (plugin_folder / file_name).string();
+            CopyFileResult cfr = copy_file(file_path, dest_path, error_message, false);
+            if (cfr != CopyFileResult::SUCCESS)
+                return;
+
+            static constexpr const auto perms = fs::owner_read | fs::owner_write | fs::group_read | fs::others_read;
+            fs::permissions(dest_path, perms);
         }
+
         if (boost::filesystem::exists(cache_folder))
             fs::remove_all(cache_folder);
-    }
-    catch (...) {
-        BOOST_LOG_TRIVIAL(error) << "Failed  to copy plugins from ota";
-    }
+    } catch (...) {}
 
     app_config->set("update_network_plugin", "false");
-
-    return;
 }
 
 bool GUI_App::on_init_network(bool try_backup)
