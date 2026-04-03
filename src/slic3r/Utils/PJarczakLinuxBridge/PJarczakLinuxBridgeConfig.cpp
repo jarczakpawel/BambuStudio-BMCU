@@ -81,7 +81,7 @@ bool enabled()
     return true;
 }
 
-bool source_module_is_network_module()
+bool use_bridge_network_module()
 {
 #if defined(_MSC_VER) || defined(_WIN32)
     return true;
@@ -90,6 +90,11 @@ bool source_module_is_network_module()
 #else
     return false;
 #endif
+}
+
+bool source_module_is_network_module()
+{
+    return use_bridge_network_module();
 }
 
 bool should_force_linux_plugin_payload(const std::string& plugin_name)
