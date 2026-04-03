@@ -144,9 +144,28 @@ std::string linux_source_library_name()
     return "libBambuSource.so";
 }
 
+std::string host_executable_file_name()
+{
+    return "pjarczak_bambu_linux_host";
+}
+
+std::string mac_host_wrapper_file_name()
+{
+    return "pjarczak-bambu-linux-host-wrapper";
+}
+
 bool is_linux_payload_filename(const std::string& file_name)
 {
     return file_name == linux_network_library_name() || file_name == linux_source_library_name();
+}
+
+bool is_overlay_runtime_filename(const std::string& file_name)
+{
+    return file_name == linux_payload_manifest_file_name() ||
+           file_name == bridge_network_current_dir_name() ||
+           file_name == host_executable_file_name() ||
+           file_name == mac_host_wrapper_file_name() ||
+           is_linux_payload_filename(file_name);
 }
 
 bool validate_linux_so_binary(const std::string& file_path, std::string* reason)
@@ -333,7 +352,7 @@ bool validate_linux_payload_file(const std::string& file_path, std::string* reas
 
 std::vector<std::string> ota_copy_extensions()
 {
-    return {".so", ".json"};
+    return {".so", ".json", ".dll", ".dylib"};
 }
 
 }

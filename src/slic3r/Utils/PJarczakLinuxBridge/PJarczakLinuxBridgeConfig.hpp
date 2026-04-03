@@ -18,8 +18,11 @@ std::string bridge_network_library_path(const boost::filesystem::path& plugin_fo
 
 std::string linux_network_library_name();
 std::string linux_source_library_name();
+std::string host_executable_file_name();
+std::string mac_host_wrapper_file_name();
 
 bool is_linux_payload_filename(const std::string& file_name);
+bool is_overlay_runtime_filename(const std::string& file_name);
 bool validate_linux_so_binary(const std::string& file_path, std::string* reason = nullptr);
 std::string linux_payload_manifest_file_name();
 std::string linux_payload_manifest_path(const boost::filesystem::path& plugin_folder);

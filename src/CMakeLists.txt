@@ -126,6 +126,27 @@ if (NOT WIN32 AND NOT APPLE)
 endif ()
 
 target_link_libraries(BambuStudio libslic3r cereal)
+
+if (TARGET pjarczak_bambu_networking_bridge)
+    if (WIN32)
+        add_custom_command(TARGET BambuStudio_app_gui POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:pjarczak_bambu_networking_bridge>
+                $<TARGET_FILE_DIR:BambuStudio_app_gui>
+            VERBATIM)
+    elseif (APPLE)
+        add_custom_command(TARGET BambuStudio POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:pjarczak_bambu_networking_bridge>
+                $<TARGET_FILE_DIR:BambuStudio>
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_SOURCE_DIR}/src/slic3r/Utils/PJarczakLinuxBridge/pjarczak-bambu-linux-host-wrapper
+                $<TARGET_FILE_DIR:BambuStudio>/pjarczak-bambu-linux-host-wrapper
+            COMMAND /bin/chmod +x
+                $<TARGET_FILE_DIR:BambuStudio>/pjarczak-bambu-linux-host-wrapper
+            VERBATIM)
+    endif()
+endif()
 if (APPLE)
 #    add_compile_options(-stdlib=libc++)
 #    add_definitions(-DBOOST_THREAD_DONT_USE_CHRONO -DBOOST_NO_CXX11_RVALUE_REFERENCES -DBOOST_THREAD_USES_MOVE)
@@ -289,11 +310,21 @@ if (WIN32)
     if (MSVC)
         install(TARGETS BambuStudio_app_gui RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}")
     endif ()
+
+    if (TARGET pjarczak_bambu_networking_bridge)
+        install(TARGETS pjarczak_bambu_networking_bridge RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}")
+    endif ()
     install(FILES ${output_dlls_${build_type}} DESTINATION "${CMAKE_INSTALL_PREFIX}")
 else ()
     if (APPLE)
     else()
         install(FILES ${output_sos_${build_type}} DESTINATION "${CMAKE_INSTALL_PREFIX}")
+    endif()
+
+    if (APPLE AND TARGET pjarczak_bambu_networking_bridge)
+        install(TARGETS pjarczak_bambu_networking_bridge LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}/BambuStudio.app/Contents/MacOS")
+        install(PROGRAMS ${CMAKE_SOURCE_DIR}/src/slic3r/Utils/PJarczakLinuxBridge/pjarczak-bambu-linux-host-wrapper
+            DESTINATION "${CMAKE_INSTALL_BINDIR}/BambuStudio.app/Contents/MacOS")
     endif()
     install(TARGETS BambuStudio RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" BUNDLE DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif ()

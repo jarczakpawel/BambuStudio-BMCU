@@ -3279,6 +3279,59 @@ bool GUI_App::on_init_inner()
     return true;
 }
 
+
+namespace {
+
+void pjarczak_copy_runtime_file_if_exists(const boost::filesystem::path& src_dir,
+                                          const boost::filesystem::path& dst_dir,
+                                          const std::string& file_name)
+{
+    if (file_name.empty())
+        return;
+
+    const auto src = src_dir / file_name;
+    const auto dst = dst_dir / file_name;
+
+    if (!boost::filesystem::exists(src) || boost::filesystem::is_directory(src))
+        return;
+
+    boost::filesystem::create_directories(dst.parent_path());
+
+    std::string error_message;
+    CopyFileResult cfr = copy_file(src.string(), dst.string(), error_message, false);
+    if (cfr != CopyFileResult::SUCCESS) {
+        BOOST_LOG_TRIVIAL(error) << "[copy_network_if_available] copy runtime file failed: "
+                                 << PathSanitizer::sanitize(src.string()) << " -> "
+                                 << PathSanitizer::sanitize(dst.string()) << ", code=" << cfr
+                                 << ", err=" << error_message;
+        return;
+    }
+
+#ifndef WIN32
+    static constexpr const auto perms =
+        fs::owner_read | fs::owner_write | fs::group_read | fs::others_read |
+        fs::owner_exe | fs::group_exe | fs::others_exe;
+    try {
+        fs::permissions(dst, perms);
+    } catch (...) {}
+#endif
+}
+
+void pjarczak_copy_local_overlay_runtime(const boost::filesystem::path& plugin_folder)
+{
+    if (!Slic3r::PJarczakLinuxBridge::enabled())
+        return;
+
+    const boost::filesystem::path exe_path(into_u8(wxStandardPaths::Get().GetExecutablePath()));
+    const boost::filesystem::path exe_dir = exe_path.parent_path();
+
+    pjarczak_copy_runtime_file_if_exists(exe_dir, plugin_folder, Slic3r::PJarczakLinuxBridge::bridge_network_current_dir_name());
+    pjarczak_copy_runtime_file_if_exists(exe_dir, plugin_folder, Slic3r::PJarczakLinuxBridge::host_executable_file_name());
+    pjarczak_copy_runtime_file_if_exists(exe_dir, plugin_folder, Slic3r::PJarczakLinuxBridge::mac_host_wrapper_file_name());
+}
+
+}
+
 void GUI_App::copy_network_if_available()
 {
     if (app_config->get("update_network_plugin") != "true")
@@ -3291,6 +3344,8 @@ void GUI_App::copy_network_if_available()
 
     if (!boost::filesystem::exists(plugin_folder))
         boost::filesystem::create_directory(plugin_folder);
+
+    pjarczak_copy_local_overlay_runtime(plugin_folder);
 
     if (!boost::filesystem::exists(cache_folder)) {
         app_config->set("update_network_plugin", "false");
@@ -3306,18 +3361,14 @@ void GUI_App::copy_network_if_available()
             std::string file_path = path.string();
 
             if (Slic3r::PJarczakLinuxBridge::enabled()) {
-                if (file_name == Slic3r::PJarczakLinuxBridge::linux_payload_manifest_file_name()) {
-                    std::string dest_path = (plugin_folder / file_name).string();
-                    CopyFileResult cfr = copy_file(file_path, dest_path, error_message, false);
-                    if (cfr != CopyFileResult::SUCCESS)
-                        return;
+                if (!Slic3r::PJarczakLinuxBridge::is_overlay_runtime_filename(file_name))
                     continue;
+
+                if (Slic3r::PJarczakLinuxBridge::is_linux_payload_filename(file_name)) {
+                    std::string validate_reason;
+                    if (!Slic3r::PJarczakLinuxBridge::validate_linux_payload_file(file_path, &validate_reason))
+                        continue;
                 }
-                if (!Slic3r::PJarczakLinuxBridge::is_linux_payload_filename(file_name))
-                    continue;
-                std::string validate_reason;
-                if (!Slic3r::PJarczakLinuxBridge::validate_linux_payload_file(file_path, &validate_reason))
-                    continue;
             }
 
             std::string dest_path = (plugin_folder / file_name).string();
@@ -3325,9 +3376,15 @@ void GUI_App::copy_network_if_available()
             if (cfr != CopyFileResult::SUCCESS)
                 return;
 
-            static constexpr const auto perms = fs::owner_read | fs::owner_write | fs::group_read | fs::others_read;
-            fs::permissions(dest_path, perms);
+            static constexpr const auto perms =
+                fs::owner_read | fs::owner_write | fs::group_read | fs::others_read |
+                fs::owner_exe | fs::group_exe | fs::others_exe;
+            try {
+                fs::permissions(dest_path, perms);
+            } catch (...) {}
         }
+
+        pjarczak_copy_local_overlay_runtime(plugin_folder);
 
         if (boost::filesystem::exists(cache_folder))
             fs::remove_all(cache_folder);
@@ -3335,6 +3392,7 @@ void GUI_App::copy_network_if_available()
 
     app_config->set("update_network_plugin", "false");
 }
+
 
 bool GUI_App::on_init_network(bool try_backup)
 {

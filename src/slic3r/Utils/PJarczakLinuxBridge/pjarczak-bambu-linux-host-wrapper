@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+HOST_PATH="${1:-}"
+if [ -z "$HOST_PATH" ]; then
+    echo "missing host path" >&2
+    exit 127
+fi
+
+PLUGIN_DIR="${PJARCZAK_BAMBU_PLUGIN_DIR:-$(dirname "$HOST_PATH")}"
+NETWORK_SO="${PJARCZAK_BAMBU_NETWORK_SO:-$PLUGIN_DIR/libbambu_networking.so}"
+SOURCE_SO="${PJARCZAK_BAMBU_SOURCE_SO:-$PLUGIN_DIR/libBambuSource.so}"
+DOCKER_PLATFORM="${PJARCZAK_BAMBU_DOCKER_PLATFORM:-linux/amd64}"
+DOCKER_IMAGE="${PJARCZAK_BAMBU_DOCKER_IMAGE:-ubuntu:22.04}"
+
+if command -v docker >/dev/null 2>&1; then
+    exec docker run --rm -i --platform "$DOCKER_PLATFORM" \
+        -e PJARCZAK_BAMBU_PLUGIN_DIR="$PLUGIN_DIR" \
+        -e PJARCZAK_BAMBU_NETWORK_SO="$NETWORK_SO" \
+        -e PJARCZAK_BAMBU_SOURCE_SO="$SOURCE_SO" \
+        -v "$PLUGIN_DIR":"$PLUGIN_DIR" \
+        -w "$PLUGIN_DIR" \
+        "$DOCKER_IMAGE" \
+        "$HOST_PATH"
+fi
+
+echo "docker not found" >&2
+exit 127
