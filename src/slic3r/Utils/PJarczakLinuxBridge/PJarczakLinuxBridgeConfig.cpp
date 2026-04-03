@@ -224,7 +224,7 @@ std::string sha256_file_hex(const std::string& file_path, std::string* reason)
 
 std::string expected_network_abi_version()
 {
-    return env_or("PJARCZAK_EXPECTED_BAMBU_NETWORK_VERSION", BBL::BAMBU_NETWORK_AGENT_VERSION);
+    return env_or("PJARCZAK_EXPECTED_BAMBU_NETWORK_VERSION", BAMBU_NETWORK_AGENT_VERSION);
 }
 
 bool abi_version_matches_expected(const std::string& actual_version, std::string* reason)
